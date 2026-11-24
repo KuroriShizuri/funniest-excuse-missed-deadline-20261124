@@ -75,6 +75,34 @@ def _whitespace_problems(text: str) -> list[str]:
     return problems
 
 
+def _length_problems(text: str) -> list[str]:
+    """Length failures for `text` against the 1-MAX_CHARS gate."""
+    if 1 <= len(text) <= MAX_CHARS:
+        return []
+    return [f"length {len(text)} chars, must be 1-{MAX_CHARS}"]
+
+
+def _forbidden_char_problems(text: str) -> list[str]:
+    """One failure per forbidden character present in `text`."""
+    problems = []
+    for ch in FORBIDDEN_CHARS:
+        if ch in text:
+            problems.append(
+                f"entry contains forbidden character {ch!r} "
+                "(must be a single line)"
+            )
+    return problems
+
+
+def _encoding_problems(text: str) -> list[str]:
+    """UTF-8 encodability failure for `text`, if any."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:  # pragma: no cover - defensive
+        return [f"not encodable as UTF-8: {exc}"]
+    return []
+
+
 def validate(text: str) -> list[str]:
     """Return a list of gate failures for `text` (empty means valid).
 
@@ -83,19 +111,10 @@ def validate(text: str) -> list[str]:
     edit shows the full picture instead of one error at a time.
     """
     problems = []
-    if not 1 <= len(text) <= MAX_CHARS:
-        problems.append(f"length {len(text)} chars, must be 1-{MAX_CHARS}")
+    problems.extend(_length_problems(text))
     problems.extend(_whitespace_problems(text))
-    for ch in FORBIDDEN_CHARS:
-        if ch in text:
-            problems.append(
-                f"entry contains forbidden character {ch!r} "
-                "(must be a single line)"
-            )
-    try:
-        text.encode("utf-8")
-    except UnicodeEncodeError as exc:  # pragma: no cover - defensive
-        problems.append(f"not encodable as UTF-8: {exc}")
+    problems.extend(_forbidden_char_problems(text))
+    problems.extend(_encoding_problems(text))
     return problems
 
 
@@ -153,7 +172,8 @@ def check_entry() -> int:
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser (--out / --check / --self-test)."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=None,
                         help="output directory (default: "
@@ -164,7 +184,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--self-test", action="store_true",
                         help="validate ENTRY and check a byte-identical "
                              "write/read round-trip, then exit")
-    args = parser.parse_args(argv)
+    return parser
+
+
+def resolve_out_dir(args: argparse.Namespace) -> str:
+    """Output dir: --out wins, else $MAKEFUN_OUTPUT_DIR, else /output."""
+    return args.out or os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
+
+
+def verify_written(path: str) -> bool:
+    """True iff the file at `path` holds exactly ENTRY as UTF-8 bytes."""
+    return read_back(path) == ENTRY.encode("utf-8")
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
 
     if args.check:
         return check_entry()
@@ -177,10 +211,9 @@ def main(argv: list[str] | None = None) -> int:
         print("invalid ENTRY: " + "; ".join(problems), file=sys.stderr)
         return 1
 
-    out_dir = args.out or os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")
-    path = write_entry(out_dir)
+    path = write_entry(resolve_out_dir(args))
     # Read back and confirm the file holds exactly the entry.
-    if read_back(path) != ENTRY.encode("utf-8"):
+    if not verify_written(path):
         print(f"read-back mismatch in {path}", file=sys.stderr)
         return 1
     print(f"wrote {path} ({len(ENTRY)} chars)")
